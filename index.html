@@ -386,7 +386,8 @@
 
 <button class="install-button" id="installButton">Install App</button>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/quagga/0.12.1/quagga.min.js"></script>
+<!-- Add ZXing library -->
+<script src="https://unpkg.com/@zxing/library@latest"></script>
 
 <script>
     document.addEventListener('DOMContentLoaded', function() {
@@ -407,8 +408,9 @@
         const scanningIndicator = document.getElementById('scanningIndicator');
         
         let cameraActive = false;
-        let quaggaInitialized = false;
-        
+        let codeReader = null; // ZXing reader instance
+        let selectedDeviceId = null;
+
         // Set default date to today
         const today = new Date();
         const formattedDate = today.toISOString().split('T')[0];
@@ -417,12 +419,7 @@
         // Variables
         let attendanceData = [];
         
-        // Debounce variables for Quagga
-        let lastResult = null;
-        let sameResultCount = 0;
-        const REQUIRED_CONFIRMATIONS = 3;
-        
-        // Focus the scan input on page load
+        // Focus scan input
         scanInput.focus();
         
         // Event listeners
@@ -433,10 +430,9 @@
                 event.preventDefault();
             }
         });
-        
-        // Clear button
+
         clearButton.addEventListener('click', function() {
-            if (confirm('Are you sure you want to clear all attendance data?')) {
+            if (confirm('Clear all attendance data?')) {
                 attendanceData = [];
                 attendanceBody.innerHTML = '';
                 updateStudentCount();
@@ -444,23 +440,17 @@
                 localStorage.removeItem('attendanceRecords');
             }
         });
-        
-        // Export button
+
         exportButton.addEventListener('click', exportToCSV);
-        
-        // Camera controls
         startCameraBtn.addEventListener('click', startCamera);
         stopCameraBtn.addEventListener('click', stopCamera);
         
-        // Functions
+        // =============== CORE FUNCTIONS ===============
         function updateStatus(message, type = 'default') {
             statusBar.textContent = message;
             statusBar.className = 'status-bar';
-            if (type === 'success') {
-                statusBar.classList.add('status-success');
-            } else if (type === 'error') {
-                statusBar.classList.add('status-error');
-            }
+            if (type === 'success') statusBar.classList.add('status-success');
+            if (type === 'error') statusBar.classList.add('status-error');
         }
         
         function processBarcodeData(barcodeData) {
@@ -471,18 +461,14 @@
                 }
                 
                 const matric = barcodeData.trim();
-                console.log('Processing barcode:', matric);
-                
                 if (matric.length < 4) {
-                    updateStatus('Barcode too short for matric number', 'error');
+                    updateStatus('Barcode too short', 'error');
                     return;
                 }
                 
                 const isDuplicate = attendanceData.some(item => 
-                    item.matric === matric && 
-                    item.date === dateInput.value
+                    item.matric === matric && item.date === dateInput.value
                 );
-                
                 if (isDuplicate) {
                     updateStatus(`${matric} already scanned today`, 'error');
                     return;
@@ -491,31 +477,17 @@
                 const now = new Date();
                 const timeString = now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
                 
-                attendanceData.push({ 
-                    matric, 
-                    time: timeString,
-                    date: dateInput.value
-                });
+                attendanceData.push({ matric, time: timeString, date: dateInput.value });
                 
                 const row = document.createElement('tr');
-                row.innerHTML = `
-                    <td>${matric}</td>
-                    <td>${timeString}</td>
-                `;
+                row.innerHTML = `<td>${matric}</td><td>${timeString}</td>`;
                 attendanceBody.appendChild(row);
                 
                 row.classList.add('success-flash');
                 updateStatus(`✅ Scanned: ${matric}`, 'success');
-                
                 updateStudentCount();
                 
-                try {
-                    localStorage.setItem('attendanceRecords', JSON.stringify(attendanceData));
-                } catch (e) {
-                    console.error("Storage error:", e);
-                    updateStatus("Warning: Data not saved (storage full)", 'error');
-                }
-                
+                localStorage.setItem('attendanceRecords', JSON.stringify(attendanceData));
             } catch (error) {
                 console.error("Scan error:", error);
                 updateStatus(`Error: ${error.message}`, 'error');
@@ -531,49 +503,28 @@
                 alert('Please enter a course code');
                 return;
             }
-            
             if (attendanceData.length === 0) {
                 alert('No attendance data to export');
                 return;
             }
             
-            const course = coursecodeInput.value.trim();
-            const date = dateInput.value;
-            const filename = `${course}_${date}.csv`;
-            
-            function escapeCSV(text) {
-                if (typeof text !== 'string') text = String(text);
-                if (/^[=@+-]/.test(text)) {
-                    return "'" + text.replace(/"/g, '""');
-                }
-                return '"' + text.replace(/"/g, '""') + '"';
-            }
-            
+            const filename = `${coursecodeInput.value.trim()}_${dateInput.value}.csv`;
             let csvContent = 'Matric Number,Time,Date\n';
-            attendanceData.forEach(student => {
-                csvContent += [
-                    escapeCSV(student.matric),
-                    escapeCSV(student.time),
-                    escapeCSV(student.date)
-                ].join(',') + '\n';
+            
+            attendanceData.forEach(s => {
+                csvContent += `"${s.matric}","${s.time}","${s.date}"\n`;
             });
             
             const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
             const link = document.createElement('a');
-            
-            const url = URL.createObjectURL(blob);
-            link.setAttribute('href', url);
-            link.setAttribute('download', filename);
-            link.style.visibility = 'hidden';
-            
-            document.body.appendChild(link);
+            link.href = URL.createObjectURL(blob);
+            link.download = filename;
             link.click();
-            document.body.removeChild(link);
             
             updateStatus(`Attendance exported to ${filename}`, 'success');
         }
-
-        // Camera Functions using QuaggaJS
+        
+        // =============== ZXing CAMERA FUNCTIONS ===============
         async function startCamera() {
             try {
                 updateStatus('Starting camera...', 'default');
@@ -581,110 +532,56 @@
                 
                 videoContainer.style.display = 'block';
                 scanningIndicator.style.display = 'block';
+
+                codeReader = new ZXing.BrowserMultiFormatReader();
+
+                const devices = await ZXing.BrowserCodeReader.listVideoInputDevices();
+                if (devices.length === 0) {
+                    throw new Error("No camera found");
+                }
                 
-                Quagga.init({
-                    inputStream: {
-                        name: "Live",
-                        type: "LiveStream",
-                        target: videoContainer,
-                        constraints: {
-                            width: 640,
-                            height: 480,
-                            facingMode: "environment"
-                        }
-                    },
-                    decoder: {
-                        readers: [
-                            "code_128_reader",
-                            "ean_reader",
-                            "ean_8_reader",
-                            "code_39_reader",
-                            "code_39_vin_reader",
-                            "codabar_reader",
-                            "upc_reader",
-                            "upc_e_reader",
-                            "i2of5_reader"
-                        ]
-                    },
-                    locator: {
-                        patchSize: "medium",
-                        halfSample: true
-                    },
-                    numOfWorkers: 2,
-                    frequency: 10,
-                    debug: {
-                        showCanvas: false
+                selectedDeviceId = devices[0].deviceId; // use back camera if available
+                cameraActive = true;
+
+                codeReader.decodeFromVideoDevice(selectedDeviceId, videoContainer, (result, err) => {
+                    if (result) {
+                        updateStatus('📋 Barcode detected!', 'success');
+                        processBarcodeData(result.getText());
+
+                        setTimeout(() => {
+                            if (cameraActive) updateStatus('Camera ready - Point at barcode', 'default');
+                        }, 2000);
                     }
-                }, function(err) {
-                    if (err) {
-                        console.error('Quagga initialization error:', err);
-                        updateStatus('Camera initialization failed', 'error');
-                        startCameraBtn.disabled = false;
-                        return;
-                    }
-                    
-                    Quagga.start();
-                    cameraActive = true;
-                    quaggaInitialized = true;
-                    startCameraBtn.style.display = 'none';
-                    stopCameraBtn.style.display = 'inline-block';
-                    updateStatus('Camera ready - Point at barcode', 'success');
-                });
-                
-                // Debounced detection
-                Quagga.onDetected(function(result) {
-                    if (cameraActive && result && result.codeResult && result.codeResult.code) {
-                        const code = result.codeResult.code;
-                        
-                        if (lastResult !== code) {
-                            lastResult = code;
-                            sameResultCount = 1;
-                            return; // wait for more confirmations
-                        }
-                        
-                        sameResultCount++;
-                        
-                        if (sameResultCount >= REQUIRED_CONFIRMATIONS) {
-                            updateStatus('📋 Barcode detected!', 'success');
-                            processBarcodeData(code);
-                            
-                            // Reset after a successful detection
-                            lastResult = null;
-                            sameResultCount = 0;
-                            
-                            setTimeout(() => {
-                                if (cameraActive) {
-                                    updateStatus('Camera ready - Point at barcode', 'default');
-                                }
-                            }, 2000);
-                        }
+                    if (err && !(err instanceof ZXing.NotFoundException)) {
+                        console.error(err);
                     }
                 });
-                
+
+                startCameraBtn.style.display = 'none';
+                stopCameraBtn.style.display = 'inline-block';
+                updateStatus('Camera ready - Point at barcode', 'success');
+
             } catch (err) {
                 console.error('Camera error:', err);
-                updateStatus('Camera access denied or not available', 'error');
+                updateStatus('Camera init failed', 'error');
                 startCameraBtn.disabled = false;
             }
         }
         
         function stopCamera() {
-            if (quaggaInitialized) {
-                Quagga.stop();
-                quaggaInitialized = false;
+            if (codeReader) {
+                codeReader.reset();
             }
-            
             cameraActive = false;
             videoContainer.style.display = 'none';
             startCameraBtn.style.display = 'inline-block';
             startCameraBtn.disabled = false;
             stopCameraBtn.style.display = 'none';
             scanningIndicator.style.display = 'none';
-            
             updateStatus('Camera stopped', 'default');
         }
 
-        // Safe data loading
+        // Load saved data
         try {
             const savedData = localStorage.getItem('attendanceRecords');
             if (savedData) {
@@ -702,55 +599,14 @@
             attendanceBody.innerHTML = '';
             attendanceData.forEach(student => {
                 const row = document.createElement('tr');
-                row.innerHTML = `
-                    <td>${student.matric}</td>
-                    <td>${student.time}</td>
-                `;
+                row.innerHTML = `<td>${student.matric}</td><td>${student.time}</td>`;
                 attendanceBody.appendChild(row);
             });
         }
 
-        // PWA Install prompt
-        let deferredPrompt;
-        const installButton = document.getElementById('installButton');
-
-        window.addEventListener('beforeinstallprompt', (e) => {
-            e.preventDefault();
-            deferredPrompt = e;
-            installButton.style.display = 'block';
-        });
-
-        installButton.addEventListener('click', () => {
-            installButton.style.display = 'none';
-            deferredPrompt.prompt();
-            deferredPrompt.userChoice.then((choiceResult) => {
-                if (choiceResult.outcome === 'accepted') {
-                    console.log('User accepted the install prompt');
-                } else {
-                    console.log('User dismissed the install prompt');
-                }
-                deferredPrompt = null;
-            });
-        });
-        
-        // Clean up camera on page unload
-        window.addEventListener('beforeunload', () => {
-            stopCamera();
-        });
+        // Clean up on unload
+        window.addEventListener('beforeunload', stopCamera);
     });
-
-    // Register service worker
-    if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-            navigator.serviceWorker.register('./service-worker.js')
-                .then(registration => {
-                    console.log('ServiceWorker registration successful with scope: ', registration.scope);
-                })
-                .catch(err => {
-                    console.log('ServiceWorker registration failed: ', err);
-                });
-        });
-    }
 </script>
 
 </body>
