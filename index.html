@@ -11,6 +11,7 @@
     <link rel="apple-touch-icon" href="./icons/icon-192x192.png">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black">
+    <script src="https://unpkg.com/@zxing/library@latest"></script>
     <style>
         * {
             box-sizing: border-box;
@@ -387,226 +388,213 @@
 <button class="install-button" id="installButton">Install App</button>
 
 <!-- Add ZXing library -->
-<script src="https://unpkg.com/@zxing/library@latest"></script>
+
 
 <script>
-    document.addEventListener('DOMContentLoaded', function() {
-        // Elements
-        const scanInput = document.getElementById('scanInput');
-        const attendanceBody = document.getElementById('attendanceBody');
-        const statusBar = document.getElementById('statusBar');
-        const coursecodeInput = document.getElementById('coursecode');
-        const dateInput = document.getElementById('date');
-        const clearButton = document.getElementById('clearButton');
-        const exportButton = document.getElementById('exportButton');
-        const studentCount = document.getElementById('studentCount');
-        
-        // Camera elements
-        const startCameraBtn = document.getElementById('startCamera');
-        const stopCameraBtn = document.getElementById('stopCamera');
-        const videoContainer = document.getElementById('videoContainer');
-        const scanningIndicator = document.getElementById('scanningIndicator');
-        
-        let cameraActive = false;
-        let codeReader = null; // ZXing reader instance
-        let selectedDeviceId = null;
+document.addEventListener("DOMContentLoaded", () => {
+    // ================= ELEMENTS =================
+    const scanInput       = document.getElementById("scanInput");
+    const attendanceBody  = document.getElementById("attendanceBody");
+    const statusBar       = document.getElementById("statusBar");
+    const coursecodeInput = document.getElementById("coursecode");
+    const dateInput       = document.getElementById("date");
+    const clearButton     = document.getElementById("clearButton");
+    const exportButton    = document.getElementById("exportButton");
+    const studentCount    = document.getElementById("studentCount");
 
-        // Set default date to today
-        const today = new Date();
-        const formattedDate = today.toISOString().split('T')[0];
-        dateInput.value = formattedDate;
-        
-        // Variables
-        let attendanceData = [];
-        
-        // Focus scan input
-        scanInput.focus();
-        
-        // Event listeners
-        scanInput.addEventListener('keydown', function(event) {
-            if (event.key === 'Enter') {
-                processBarcodeData(this.value);
-                this.value = '';
-                event.preventDefault();
-            }
+    // Camera
+    const startCameraBtn  = document.getElementById("startCamera");
+    const stopCameraBtn   = document.getElementById("stopCamera");
+    const videoContainer  = document.getElementById("videoContainer");
+    const videoElement    = document.getElementById("camera");
+    const scanningIndicator = document.getElementById("scanningIndicator");
+
+    // ================= VARIABLES =================
+    let attendanceData = [];
+    let codeReader = null;
+    let cameraActive = false;
+    let selectedDeviceId = null;
+
+    // ================= INIT =================
+    const today = new Date().toISOString().split("T")[0];
+    dateInput.value = today;
+    scanInput.focus();
+
+    // ================= UTILITIES =================
+    function updateStatus(message, type = "default") {
+        statusBar.textContent = message;
+        statusBar.className = "status-bar";
+        if (type === "success") statusBar.classList.add("status-success");
+        if (type === "error")   statusBar.classList.add("status-error");
+    }
+
+    function updateStudentCount() {
+        studentCount.textContent = attendanceData.length;
+    }
+
+    function updateTable() {
+        attendanceBody.innerHTML = "";
+        attendanceData.forEach(({matric, time}) => {
+            const row = document.createElement("tr");
+            row.innerHTML = `<td>${matric}</td><td>${time}</td>`;
+            attendanceBody.appendChild(row);
+        });
+    }
+
+    // ================= CORE =================
+    function processBarcodeData(barcode) {
+        if (!barcode || barcode.trim() === "") {
+            updateStatus("No barcode data received", "error");
+            return;
+        }
+
+        const matric = barcode.trim();
+        if (matric.length < 4) {
+            updateStatus("Barcode too short", "error");
+            return;
+        }
+
+        const isDuplicate = attendanceData.some(item =>
+            item.matric === matric && item.date === dateInput.value
+        );
+        if (isDuplicate) {
+            updateStatus(`${matric} already scanned today`, "error");
+            return;
+        }
+
+        const now = new Date();
+        const timeString = now.toLocaleTimeString([], {hour: "2-digit", minute:"2-digit"});
+
+        attendanceData.push({ matric, time: timeString, date: dateInput.value });
+
+        const row = document.createElement("tr");
+        row.innerHTML = `<td>${matric}</td><td>${timeString}</td>`;
+        row.classList.add("success-flash");
+        attendanceBody.appendChild(row);
+
+        updateStudentCount();
+        updateStatus(`✅ Scanned: ${matric}`, "success");
+
+        localStorage.setItem("attendanceRecords", JSON.stringify(attendanceData));
+    }
+
+    function exportToCSV() {
+        if (!coursecodeInput.value.trim()) {
+            alert("Please enter a course code");
+            return;
+        }
+        if (attendanceData.length === 0) {
+            alert("No attendance data to export");
+            return;
+        }
+
+        const filename = `${coursecodeInput.value.trim()}_${dateInput.value}.csv`;
+        let csvContent = "Matric Number,Time,Date\n";
+        attendanceData.forEach(s => {
+            csvContent += `"${s.matric}","${s.time}","${s.date}"\n`;
         });
 
-        clearButton.addEventListener('click', function() {
-            if (confirm('Clear all attendance data?')) {
-                attendanceData = [];
-                attendanceBody.innerHTML = '';
-                updateStudentCount();
-                updateStatus('All data cleared', 'default');
-                localStorage.removeItem('attendanceRecords');
-            }
-        });
+        const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = filename;
+        link.click();
 
-        exportButton.addEventListener('click', exportToCSV);
-        startCameraBtn.addEventListener('click', startCamera);
-        stopCameraBtn.addEventListener('click', stopCamera);
-        
-        // =============== CORE FUNCTIONS ===============
-        function updateStatus(message, type = 'default') {
-            statusBar.textContent = message;
-            statusBar.className = 'status-bar';
-            if (type === 'success') statusBar.classList.add('status-success');
-            if (type === 'error') statusBar.classList.add('status-error');
-        }
-        
-        function processBarcodeData(barcodeData) {
-            try {
-                if (!barcodeData || barcodeData.trim() === '') {
-                    updateStatus('No barcode data received', 'error');
-                    return;
-                }
-                
-                const matric = barcodeData.trim();
-                if (matric.length < 4) {
-                    updateStatus('Barcode too short', 'error');
-                    return;
-                }
-                
-                const isDuplicate = attendanceData.some(item => 
-                    item.matric === matric && item.date === dateInput.value
-                );
-                if (isDuplicate) {
-                    updateStatus(`${matric} already scanned today`, 'error');
-                    return;
-                }
-                
-                const now = new Date();
-                const timeString = now.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-                
-                attendanceData.push({ matric, time: timeString, date: dateInput.value });
-                
-                const row = document.createElement('tr');
-                row.innerHTML = `<td>${matric}</td><td>${timeString}</td>`;
-                attendanceBody.appendChild(row);
-                
-                row.classList.add('success-flash');
-                updateStatus(`✅ Scanned: ${matric}`, 'success');
-                updateStudentCount();
-                
-                localStorage.setItem('attendanceRecords', JSON.stringify(attendanceData));
-            } catch (error) {
-                console.error("Scan error:", error);
-                updateStatus(`Error: ${error.message}`, 'error');
-            }
-        }
-        
-        function updateStudentCount() {
-            studentCount.textContent = attendanceData.length;
-        }
-        
-        function exportToCSV() {
-            if (!coursecodeInput.value.trim()) {
-                alert('Please enter a course code');
-                return;
-            }
-            if (attendanceData.length === 0) {
-                alert('No attendance data to export');
-                return;
-            }
-            
-            const filename = `${coursecodeInput.value.trim()}_${dateInput.value}.csv`;
-            let csvContent = 'Matric Number,Time,Date\n';
-            
-            attendanceData.forEach(s => {
-                csvContent += `"${s.matric}","${s.time}","${s.date}"\n`;
-            });
-            
-            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-            const link = document.createElement('a');
-            link.href = URL.createObjectURL(blob);
-            link.download = filename;
-            link.click();
-            
-            updateStatus(`Attendance exported to ${filename}`, 'success');
-        }
-        
-        // =============== ZXing CAMERA FUNCTIONS ===============
-        async function startCamera() {
-            try {
-                updateStatus('Starting camera...', 'default');
-                startCameraBtn.disabled = true;
-                
-                videoContainer.style.display = 'block';
-                scanningIndicator.style.display = 'block';
+        updateStatus(`Attendance exported to ${filename}`, "success");
+    }
 
-                codeReader = new ZXing.BrowserMultiFormatReader();
-
-                const devices = await ZXing.BrowserCodeReader.listVideoInputDevices();
-                if (devices.length === 0) {
-                    throw new Error("No camera found");
-                }
-                
-                selectedDeviceId = devices[0].deviceId; // use back camera if available
-                cameraActive = true;
-
-                codeReader.decodeFromVideoDevice(selectedDeviceId, videoContainer, (result, err) => {
-                    if (result) {
-                        updateStatus('📋 Barcode detected!', 'success');
-                        processBarcodeData(result.getText());
-
-                        setTimeout(() => {
-                            if (cameraActive) updateStatus('Camera ready - Point at barcode', 'default');
-                        }, 2000);
-                    }
-                    if (err && !(err instanceof ZXing.NotFoundException)) {
-                        console.error(err);
-                    }
-                });
-
-                startCameraBtn.style.display = 'none';
-                stopCameraBtn.style.display = 'inline-block';
-                updateStatus('Camera ready - Point at barcode', 'success');
-
-            } catch (err) {
-                console.error('Camera error:', err);
-                updateStatus('Camera init failed', 'error');
-                startCameraBtn.disabled = false;
-            }
-        }
-        
-        function stopCamera() {
-            if (codeReader) {
-                codeReader.reset();
-            }
-            cameraActive = false;
-            videoContainer.style.display = 'none';
-            startCameraBtn.style.display = 'inline-block';
-            startCameraBtn.disabled = false;
-            stopCameraBtn.style.display = 'none';
-            scanningIndicator.style.display = 'none';
-            updateStatus('Camera stopped', 'default');
-        }
-
-        // Load saved data
+    // ================= CAMERA =================
+    async function startCamera() {
         try {
-            const savedData = localStorage.getItem('attendanceRecords');
-            if (savedData) {
-                attendanceData = JSON.parse(savedData);
-                updateTable();
-                updateStudentCount();
-            }
-        } catch (e) {
-            console.error("Corrupted data reset:", e);
-            attendanceData = [];
-            localStorage.removeItem('attendanceRecords');
-        }
+            updateStatus("Starting camera...");
+            startCameraBtn.disabled = true;
+            videoContainer.style.display = "block";
+            scanningIndicator.style.display = "block";
 
-        function updateTable() {
-            attendanceBody.innerHTML = '';
-            attendanceData.forEach(student => {
-                const row = document.createElement('tr');
-                row.innerHTML = `<td>${student.matric}</td><td>${student.time}</td>`;
-                attendanceBody.appendChild(row);
+            codeReader = new ZXing.BrowserMultiFormatReader();
+
+            // ✅ FIX: use instance method instead of class
+            const devices = await codeReader.listVideoInputDevices();
+            if (devices.length === 0) throw new Error("No camera found");
+
+            // Prefer back camera if available
+            selectedDeviceId = devices.length > 1 ? devices[devices.length - 1].deviceId : devices[0].deviceId;
+            cameraActive = true;
+
+            codeReader.decodeFromVideoDevice(selectedDeviceId, videoElement, (result, err) => {
+                if (result) {
+                    processBarcodeData(result.getText());
+                    setTimeout(() => {
+                        if (cameraActive) updateStatus("Camera ready - Point at barcode");
+                    }, 1500);
+                }
+                if (err && !(err instanceof ZXing.NotFoundException)) {
+                    console.error("Decode error:", err);
+                }
             });
-        }
 
-        // Clean up on unload
-        window.addEventListener('beforeunload', stopCamera);
+            startCameraBtn.style.display = "none";
+            stopCameraBtn.style.display = "inline-block";
+            updateStatus("Camera ready - Point at barcode", "success");
+        } catch (err) {
+            console.error("Camera error:", err);
+            updateStatus("Camera init failed: " + err.message, "error");
+            startCameraBtn.disabled = false;
+        }
+    }
+
+    function stopCamera() {
+        if (codeReader) {
+            codeReader.reset();
+        }
+        cameraActive = false;
+        videoContainer.style.display = "none";
+        startCameraBtn.style.display = "inline-block";
+        startCameraBtn.disabled = false;
+        stopCameraBtn.style.display = "none";
+        scanningIndicator.style.display = "none";
+        updateStatus("Camera stopped");
+    }
+
+    // ================= EVENTS =================
+    scanInput.addEventListener("keydown", e => {
+        if (e.key === "Enter") {
+            processBarcodeData(scanInput.value);
+            scanInput.value = "";
+            e.preventDefault();
+        }
     });
+
+    clearButton.addEventListener("click", () => {
+        if (confirm("Clear all attendance data?")) {
+            attendanceData = [];
+            updateTable();
+            updateStudentCount();
+            updateStatus("All data cleared");
+            localStorage.removeItem("attendanceRecords");
+        }
+    });
+
+    exportButton.addEventListener("click", exportToCSV);
+    startCameraBtn.addEventListener("click", startCamera);
+    stopCameraBtn.addEventListener("click", stopCamera);
+
+    // Load saved records
+    try {
+        const saved = localStorage.getItem("attendanceRecords");
+        if (saved) {
+            attendanceData = JSON.parse(saved);
+            updateTable();
+            updateStudentCount();
+        }
+    } catch (err) {
+        console.error("Error loading saved data:", err);
+        localStorage.removeItem("attendanceRecords");
+    }
+
+    // Stop camera before leaving
+    window.addEventListener("beforeunload", stopCamera);
+});
 </script>
 
 </body>
